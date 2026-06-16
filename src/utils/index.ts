@@ -25,12 +25,20 @@ export function calculateRent(
       amount: baseRent,
     });
   } else {
-    baseRent = config.dailyRate * days;
-    pricingTier = 'medium';
-    breakdown.push({
-      description: `基础租金（${config.dailyRate}元/天 × ${days}天）`,
-      amount: baseRent,
-    });
+    const calculated = config.dailyRate * days;
+    baseRent = Math.min(calculated, config.capPrice);
+    pricingTier = calculated > config.capPrice ? 'long' : 'medium';
+    if (calculated > config.capPrice) {
+      breakdown.push({
+        description: `基础租金（${config.dailyRate}元/天 × ${days}天 = ${calculated.toFixed(0)}元，已触发封顶价拦截）`,
+        amount: baseRent,
+      });
+    } else {
+      breakdown.push({
+        description: `基础租金（${config.dailyRate}元/天 × ${days}天）`,
+        amount: baseRent,
+      });
+    }
   }
 
   const waterFee = Number((waterUsage * config.waterUnitPrice).toFixed(2));
@@ -69,7 +77,7 @@ export function calculateRent(
   };
 }
 
-export function getApprovalStatus(steps: ApprovalStep[]): DepositRequest['status'] | 'all_approved' {
+export function getApprovalStatus(steps: ApprovalStep[]): DepositRequest['status'] {
   const hasRejected = steps.some((s) => s.status === 'rejected');
   if (hasRejected) return 'rejected';
 

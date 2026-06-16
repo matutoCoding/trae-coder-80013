@@ -8,6 +8,50 @@ import {
 } from '@/data/mockData';
 import { getApprovalStatus, generateId } from '@/utils';
 
+const STORAGE_KEY = 'rent-app-state-v1';
+
+const roleUserMap: Record<string, string> = {
+  house_manager: '赵强',
+  finance: '孙丽',
+  manager: '周总',
+  admin: '系统管理员',
+};
+
+interface PersistedState {
+  rentConfig: RentConfig;
+  bills: Bill[];
+  depositRequests: DepositRequest[];
+  refunds: Refund[];
+}
+
+function loadPersistedState(): Partial<PersistedState> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw) as PersistedState;
+  } catch {
+    return {};
+  }
+}
+
+function persistState(state: PersistedState) {
+  try {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        rentConfig: state.rentConfig,
+        bills: state.bills,
+        depositRequests: state.depositRequests,
+        refunds: state.refunds,
+      })
+    );
+  } catch {
+    // ignore
+  }
+}
+
+const persisted = loadPersistedState();
+
 interface AppState {
   rentConfig: RentConfig;
   bills: Bill[];
@@ -17,6 +61,7 @@ interface AppState {
   currentUserName: string;
 
   setRentConfig: (config: RentConfig) => void;
+  setCurrentRole: (role: 'house_manager' | 'finance' | 'manager' | 'admin') => void;
   addBill: (bill: Omit<Bill, 'id' | 'createdAt'>) => void;
   updateBillStatus: (billId: string, status: Bill['status']) => void;
   addDepositRequest: (
@@ -32,33 +77,54 @@ interface AppState {
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
-  rentConfig: defaultRentConfig,
-  bills: mockBills,
-  depositRequests: mockDepositRequests,
-  refunds: mockRefunds,
+  rentConfig: persisted.rentConfig ?? defaultRentConfig,
+  bills: persisted.bills ?? mockBills,
+  depositRequests: persisted.depositRequests ?? mockDepositRequests,
+  refunds: persisted.refunds ?? mockRefunds,
   currentRole: 'finance',
   currentUserName: '孙丽',
 
-  setRentConfig: (config) => set({ rentConfig: config }),
+  setRentConfig: (config) =>
+    set((state) => {
+      const next = { ...state, rentConfig: config };
+      persistState(next);
+      return next;
+    }),
+
+  setCurrentRole: (role) =>
+    set(() => ({
+      currentRole: role,
+      currentUserName: roleUserMap[role] || '用户',
+    })),
 
   addBill: (billData) =>
-    set((state) => ({
-      bills: [
-        {
-          ...billData,
-          id: generateId('b'),
-          createdAt: new Date().toISOString().split('T')[0],
-        },
-        ...state.bills,
-      ],
-    })),
+    set((state) => {
+      const next = {
+        ...state,
+        bills: [
+          {
+            ...billData,
+            id: generateId('b'),
+            createdAt: new Date().toISOString().split('T')[0],
+          },
+          ...state.bills,
+        ],
+      };
+      persistState(next);
+      return next;
+    }),
 
   updateBillStatus: (billId, status) =>
-    set((state) => ({
-      bills: state.bills.map((b) =>
-        b.id === billId ? { ...b, status } : b
-      ),
-    })),
+    set((state) => {
+      const next = {
+        ...state,
+        bills: state.bills.map((b) =>
+          b.id === billId ? { ...b, status } : b
+        ),
+      };
+      persistState(next);
+      return next;
+    }),
 
   addDepositRequest: (requestData) =>
     set((state) => {
@@ -73,7 +139,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             id: generateId('s'),
             role: 'house_manager',
             roleName: '房管',
-            approver: state.currentUserName,
+            approver: roleUserMap.house_manager,
             status: 'approved',
             comment: '发起申请',
             approvedAt: now + ' ' + new Date().toTimeString().slice(0, 5),
@@ -82,7 +148,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             id: generateId('s'),
             role: 'finance',
             roleName: '财务',
-            approver: '孙丽',
+            approver: roleUserMap.finance,
             status: 'pending',
             comment: '',
             approvedAt: null,
@@ -91,14 +157,19 @@ export const useAppStore = create<AppState>((set, get) => ({
             id: generateId('s'),
             role: 'manager',
             roleName: '主管',
-            approver: '周总',
+            approver: roleUserMap.manager,
             status: 'pending',
             comment: '',
             approvedAt: null,
           },
         ],
       };
-      return { depositRequests: [newRequest, ...state.depositRequests] };
+      const next = {
+        ...state,
+        depositRequests: [newRequest, ...state.depositRequests],
+      };
+      persistState(next);
+      return next;
     }),
 
   approveStep: (requestId, stepId, comment) =>
@@ -115,22 +186,42 @@ export const useAppStore = create<AppState>((set, get) => ({
             ? {
                 ...step,
                 status: 'approved' as const,
+                approver: roleUserMap[step.role] || step.approver,
                 comment,
                 approvedAt: `${dateStr} ${timeStr}`,
               }
             : step
         );
 
-        const newStatus = getApprovalStatus(updatedSteps);
+        const hasRejected = updatedSteps.some((s) => s.status === 'rejected');
+        const allApproved = updatedSteps.every((s) => s.status === 'approved');
+
+        let newStatus: DepositRequest['status'];
+        if (hasRejected) {
+          newStatus = 'rejected';
+        } else if (allApproved) {
+          newStatus = 'approved';
+        } else {
+          const nextPending = updatedSteps.find((s) => s.status === 'pending');
+          if (nextPending?.role === 'finance') {
+            newStatus = 'pending_finance';
+          } else if (nextPending?.role === 'manager') {
+            newStatus = 'pending_manager';
+          } else {
+            newStatus = 'approved';
+          }
+        }
 
         return {
           ...req,
           steps: updatedSteps,
-          status: newStatus === 'all_approved' ? 'approved' : (newStatus as DepositRequest['status']),
+          status: newStatus,
         };
       });
 
-      return { depositRequests: updatedRequests };
+      const next = { ...state, depositRequests: updatedRequests };
+      persistState(next);
+      return next;
     }),
 
   rejectStep: (requestId, stepId, comment) =>
@@ -147,6 +238,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             ? {
                 ...step,
                 status: 'rejected' as const,
+                approver: roleUserMap[step.role] || step.approver,
                 comment,
                 approvedAt: `${dateStr} ${timeStr}`,
               }
@@ -160,7 +252,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         };
       });
 
-      return { depositRequests: updatedRequests };
+      const next = { ...state, depositRequests: updatedRequests };
+      persistState(next);
+      return next;
     }),
 
   processRefund: (requestId, method) =>
@@ -184,7 +278,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         status: 'completed',
       };
 
-      return { refunds: [newRefund, ...state.refunds] };
+      const next = { ...state, refunds: [newRefund, ...state.refunds] };
+      persistState(next);
+      return next;
     }),
 
   getDashboardStats: () => {

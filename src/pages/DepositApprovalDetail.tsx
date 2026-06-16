@@ -56,10 +56,12 @@ export default function DepositApprovalDetail() {
   };
 
   const myPendingStep = request.steps.find(
-    (s) => s.status === 'pending' &&
-      ((currentRole === 'finance' && s.role === 'finance') ||
+    (s) =>
+      s.status === 'pending' &&
+      (currentRole === 'admin' ||
+        (currentRole === 'finance' && s.role === 'finance') ||
         (currentRole === 'manager' && s.role === 'manager') ||
-        (currentRole === 'admin'))
+        (currentRole === 'house_manager' && s.role === 'house_manager'))
   );
 
   const canApprove = !isRejected && !isApproved && !!myPendingStep;
